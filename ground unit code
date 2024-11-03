@@ -1,0 +1,512 @@
+#include <TinyGPS++.h>
+#include <Servo.h>
+#include <Adafruit_BMP085.h>
+#include <Bounce2.h>
+#include <EasyNextionLibrary.h>
+
+//variables for calcs
+float R = 6371000;  //in meters
+float lat1;
+float lon1;
+float lat2;
+float lon2;
+float lat1rad;
+float lon1rad;
+float lat2rad;
+float lon2rad;
+float deltalatrad;
+float deltalonrad;
+float alt1;
+float alt1gps;
+float alt2;
+float a;
+float c;
+float d;
+float x;
+float y;
+float z;
+float theta;
+float bearing;
+float elevangle;
+int yaw_servo_bearing = 90;
+int pitch_servo_elevangle = 90;
+float this_altitude;
+float destination_altitude;
+float altitude_offset = 7.4555;
+float average_height_diff = 0;
+float yaw_range = 255.5;
+float between_yaw_range_and_360 = 360 - ((360 - yaw_range) / 2);
+float pitch_range = 180;
+float between_pitch_range_and_360 = 360 - ((360 - pitch_range) / 2);
+// float altitude_calibration_term = 24.19677;  //calced using the recorded data
+float altitude_calibration_term = 34.34625;
+
+float elevangle_offset;
+float bearing_offset;
+// int calibration_button_pin = 11;
+// int mode_button_pin = 12;
+// Bounce2::Button mode_button = Bounce2::Button();
+// Bounce2::Button calibration_button = Bounce2::Button();
+bool calibration_btn_pressed = 0;
+bool mode_btn_pressed = 0;
+bool bluetooth_mode = 1;
+String incomingMessage = "";  // To hold incoming data
+bool messageStarted = false;
+Adafruit_BMP085 bmp;
+bool notpage0 = false;
+bool ispage0 = true;
+
+TinyGPSPlus this_gps;  //gps object
+
+// Servo s1;  // create Servo object to control a servo
+// Servo s2;  // create Servo object to control a servo
+Servo yaw_servo;
+Servo pitch_servo;
+
+int ground_manual_current_yaw = 50;
+int ground_manual_current_pitch = 50;
+int mobile_manual_current_yaw = 50;    //send these to other node record
+int mobile_manual_current_pitch = 50;  //send to other node when correct triggers happen
+
+float other_lat_long_alt[3];  // float array holding values of lat long alt of other node
+char dataReceived[32];        // this must match dataToSend in the TX
+String receivedData = "";     //received data buffer for bluetooth module
+String dataReceivedString = "";
+String receivedDataBuffer = "";
+String this_coords;
+bool newData = false;       // bool to track when new RF messages received
+bool gps_msg_complete = 0;  //bool to track when new serial GPS message received
+// SoftwareSerial ssGPS(12, 11);  //rx tx on arduino connected to tx rx on gps
+//===========
+
+EasyNex hmi(Serial1);
+
+void setup() {
+  // mode_button.attach(mode_button_pin, INPUT_PULLUP);
+  // calibration_button.attach(calibration_button_pin, INPUT_PULLUP);
+  // calibration_button.interval(5);
+  // mode_button.interval(5);
+  // calibration_button.setPressedState(LOW);
+  // mode_button.setPressedState(LOW);
+  // pinMode(calibration_button, INPUT_PULLUP);  //button is input, use internal pullup resistor
+  // pinMode(mode_button_pin, INPUT_PULLUP);         //this is button for comms mode, using bluetooth (serial) or nRF (rf24)
+  // ssGPS.begin(9600);    //gps module
+  Serial2.begin(9600);  //gps module
+  Serial3.begin(9600);  //bluetooth module
+  hmi.begin(9600);      // HMI module
+  delay(200);
+  hmi.writeStr("page 0");
+  hmi.lastCurrentPageId = 1;
+  Serial.begin(9600);
+  bmp.begin();          //pressure sensor
+  yaw_servo.attach(7);  //attach servos
+  pitch_servo.attach(6);
+  ispage0 = true;
+  notpage0 = !ispage0;
+  // CalibrateAltitudeUsingGPSInfo();
+  // yaw_servo.write(90);
+  // pitch_servo.write(90);
+
+  // radio.enableAckPayload();
+
+  // Additional debugging information
+}
+
+void loop() {
+  // CalibrateAltitudeUsingGPSInfo();
+  hmi.NextionListen();
+  if (ispage0) {  //Auto tracking code
+    ReadGPS();    //same for bt and rf mode
+    getDataBT();
+    GetValuesFromBT();
+  } else if (notpage0) {  //Manual servo control code
+    // for (int i = 0; i <= 100; i++) {
+    //   Serial.println(hmi.readNumber("n0.val"));
+    //   delay(10);
+    //   Serial.println(hmi.readNumber("n1.val"));
+    //   delay(10);
+    //   hmi.writeNum("n0.val", i);
+    //   hmi.writeNum("n1.val", 100 - i);
+    // }
+    // int this_current_yaw = hmi.readNumber("h0.val");
+    // int this_current_pitch = hmi.readNumber("h1.val");
+    // int other_current_yaw = hmi.readNumber("h2.val");
+    // int other_current_pitch = hmi.readNumber("h3.val");
+    // yaw_servo.write(hmi.readNumber("h0.val"));
+    // delay(20);
+    // pitch_servo.write(hmi.readNumber("h1.val"));
+    // Serial.println(hmi.readNumber("n0.val"));
+    // delay(20);
+    // Serial.println(hmi.readNumber("n1.val"));
+    // delay(20);
+    //  Serial.println(hmi.readNumber("n2.val"));
+    // delay(20);
+    //  Serial.println(hmi.readNumber("n3.val"));
+    // delay(20);
+    // delay(20);
+  }
+}
+
+// void CalibrateAltitudeBT() {
+//   average_height_diff = 0;
+//   for (int i = 0; i < 6; i++) {
+//     getDataBT();
+//     if (newData == true) {  //do only when new radio message received
+//       // Serial.print("Char array received: ");
+//       // Serial.println(dataReceived);
+//       int startIndex = 0;
+//       int endIndex = dataReceivedString.indexOf(",");
+//       for (int i = 0; i < 3; i++) {
+//         String valueString = dataReceivedString.substring(startIndex, endIndex);
+//         other_lat_long_alt[i] = valueString.toFloat();
+//         // Serial.println(i);
+//         // Serial.println(other_lat_long_alt[i]);
+//         startIndex = endIndex + 1;
+//         endIndex = dataReceivedString.indexOf(",", startIndex);
+//         if (endIndex == -1) {
+//           endIndex = dataReceivedString.length();
+//         }
+//       }
+//       // other_lat_long_alt[2] = bmp.readAltitude() + altitude_offset; // this must not be here, must be in section where local gps and alt values are read.
+//       newData = false;  // must be at the end of this function, so that things inside function only happen once per RF message received.
+//     }
+//     //data sorting section put receiveddata into other_lat_long_alt array
+
+
+//     //average differences between things section
+
+//     // Serial.println("data received inside of calibrate function: " + String(dataReceived));
+//     alt1 = bmp.readAltitude();
+//     alt2 = other_lat_long_alt[2];
+//     // Serial.println("I did geread this many times: " + String(i));
+//     Serial.println("alt1: " + String(alt1) + " alt2: " + String(alt2));
+//     average_height_diff += alt1 - other_lat_long_alt[2];  //add difference altogether
+//     Serial.println("avg height added together: " + String(average_height_diff));
+//   }
+//   average_height_diff = average_height_diff / 6;  //bring difference down to average value
+//   Serial.println("average height difference, average: " + String(average_height_diff));
+// }
+
+void getDataBT() {
+  while (Serial3.available()) {
+    char c = Serial3.read();  // Read each character from serial
+
+    // Start of a new message
+    if (c == '<') {
+      messageStarted = true;
+      incomingMessage = "";  // Clear any previous data
+    }
+    // End of the message
+    else if (c == '>' && messageStarted) {
+      messageStarted = false;
+      dataReceivedString = incomingMessage;  //assign local buffer value to global variable value to take the value out
+      newData = true;
+      // Serial.println("other gps coords: " + String(incomingMessage));  // Process the complete message
+
+    }
+    // Append to message if it's within start and end
+    else if (messageStarted) {
+      incomingMessage += c;
+    }
+  }
+}
+
+void GetValuesFromBT() {
+  if (newData == true) {  //do only when new radio message received
+    // Serial.print("Char array received: ");
+    Serial.println("mobile unit: " + dataReceivedString);
+    int startIndex = 0;
+    int endIndex = dataReceivedString.indexOf(",");
+    for (int i = 0; i < 3; i++) {
+      String valueString = dataReceivedString.substring(startIndex, endIndex);
+      other_lat_long_alt[i] = valueString.toFloat();
+      // Serial.println(i);
+      // Serial.println(other_lat_long_alt[i]);
+      startIndex = endIndex + 1;
+      endIndex = dataReceivedString.indexOf(",", startIndex);
+      if (endIndex == -1) {
+        endIndex = dataReceivedString.length();
+      }
+    }
+    // other_lat_long_alt[2] = bmp.readAltitude() + altitude_offset; // this must not be here, must be in section where local gps and alt values are read.
+    // hmi.writeNum("t3.txt", String(this_gps_))
+    hmi.writeStr("lat2.txt", String(other_lat_long_alt[0], 6));
+    hmi.writeStr("lon2.txt", String(other_lat_long_alt[1], 6));
+    hmi.writeStr("alt2.txt", String(other_lat_long_alt[2], 2));
+    // hmi.writeStr("lat2.txt", "Draig Cuthie");
+    // hmi.writeStr("lon2.txt", "Craig Duthie");
+    // hmi.writeStr("alt2.txt", "Craig Duthie");
+    BearingElevangleServos();
+    newData = false;  // must be at the end of this function, so that things inside function only happen once per RF message received.
+  }
+}
+
+
+
+void SendCoords() {
+  // Serial.println("Sending this_coords to mobile unit");
+  Serial3.println(this_coords);  // send to other tracker only if gps message done
+}
+
+void ReadGPS() {
+
+  while (Serial2.available() > 0) {
+    // yaw_servo.detach();
+    // pitch_servo.detach();
+    // Parse GPS messages
+    // Serial.println("serial2 being read");
+    this_gps.encode(Serial2.read());
+  }
+  if (this_gps.location.isUpdated()) {
+    // yaw_servo.attach(7);
+    // pitch_servo.attach(6);
+    // yaw_servo.write(yaw_servo_bearing);
+    // pitch_servo.write(pitch_servo_elevangle);
+    float useless = this_gps.altitude.meters();
+    gps_msg_complete = true;
+    // this_coords = "<" + String(this_gps.location.lat(), 8) + "," + String(this_gps.location.lng(), 8) + "," + String(bmp.readAltitude() + altitude_calibration_term, 2) + ">";
+    this_coords = "<" + String(this_gps.location.lat(), 8) + "," + String(this_gps.location.lng(), 8) + "," + String(this_gps.altitude.meters(), 2) + ">";
+    // this_coords = String(bmp.readAltitude(), 2) + "," + String(this_gps.altitude.meters(), 2);
+
+    SendCoords();
+    hmi.writeStr("lat1.txt", String(this_gps.location.lat(), 6));
+    hmi.writeStr("lon1.txt", String(this_gps.location.lng(), 6));
+    hmi.writeStr("alt1.txt", String(bmp.readAltitude() + altitude_calibration_term, 2));
+    // hmi.writeStr("lat2.txt", "Draig Cuthie");
+    // hmi.writeStr("lon2.txt", "Craig Duthie");
+    // hmi.writeStr("alt2.txt", "Craig Duthie");
+    // Serial.println("this coords " + String(this_coords));
+  }
+}
+
+void wait_til_gps_is_read() {
+  while (Serial2.available()) {  //makes it wait here until new gps message comes in
+    this_gps.encode(Serial2.read());
+  }
+  if (this_gps.altitude.isUpdated()) {
+    gps_msg_complete = true;
+  }
+}
+
+void CalibrateAltitudeUsingGPSInfo() {
+  Serial3.println("<cal>");
+  average_height_diff = 0;  //instantiate to zero for calcs
+  int x = 15;              //number of alt measurements to take
+  for (int i = 0; i < x; i++) {
+    hmi.writeStr("cal_btn.txt", String(i));
+    while (!gps_msg_complete) {
+      wait_til_gps_is_read();
+      delay(5);
+    }
+    Serial.println(i);
+    alt1gps = this_gps.altitude.meters();
+    alt1 = bmp.readAltitude();
+    Serial.println("alt1gps: " + String(alt1gps) + " alt1bmp: " + String(alt1));
+    average_height_diff += alt1gps - alt1;
+    Serial.println(average_height_diff);
+    gps_msg_complete = false;
+  }
+  average_height_diff = average_height_diff / x;  //
+  Serial.println("avg height diff: " + String(average_height_diff));
+  altitude_calibration_term = average_height_diff;
+  hmi.writeStr("cal_btn.txt", "alt cal");
+  // while (!Serial1.available()) {
+  //   (1);
+  // }
+  // hmi.writeStr("alt2.txt", Serial1.readString());
+}
+
+void trigger1() {
+  Serial.println("Calibrating bmp alt with gps");
+  CalibrateAltitudeUsingGPSInfo();
+}
+
+void trigger2() {  //go to  yaw1
+  Serial.println("trigger2 activated");
+  Serial3.println("<m>");      //send to bt module to send to mobile unit to make it manual control mode
+  hmi.writeStr("page page3");  //yaw1 control is page3
+  hmi.writeNum("n0.val", 100 - ground_manual_current_yaw);
+  ispage0 = false;
+  notpage0 = !ispage0;  // set notpage0 to true
+}
+void trigger3() {  //go to page0 auto track mode
+  Serial.println("trigger3 activated");
+  Serial3.println("<a>");  //this message will set it to auto track mode
+  hmi.writeStr("page page0");
+  ispage0 = true;
+  notpage0 = !ispage0;
+}
+void trigger4() {  //yaw1++
+  Serial.println("trigger4");
+  // int current_val = hmi.readNumber("n0.val");
+  if (ground_manual_current_yaw < 100) {
+    ground_manual_current_yaw++;
+    hmi.writeNum("n0.val", 100 - ground_manual_current_yaw);
+  }
+  yaw_servo.write(map(ground_manual_current_yaw, 0, 100, 0, 180));
+}
+void trigger5() {  //yaw1--
+  Serial.println("trigger5");
+  if (ground_manual_current_yaw > 0) {
+    ground_manual_current_yaw--;
+    hmi.writeNum("n0.val", 100 - ground_manual_current_yaw);
+    yaw_servo.write(map(ground_manual_current_yaw, 0, 100, 0, 180));
+  }
+}
+void trigger6() {  //go to pitch1
+  Serial.println("trigger6");
+  hmi.writeStr("page page1");  //page1 is pitch1
+  hmi.writeNum("n0.val", 100 - ground_manual_current_pitch);
+}
+void trigger7() {              //go to yaw2
+  Serial3.println("<y2>");     // Put a line here to send a request for yaw2 value
+  hmi.writeStr("page page2");  //page2 is yaw2
+  Serial.println("trigger7");
+  while (!Serial3.available()) {
+    (1);  //wait til message from bluetooth is available
+  }
+  mobile_manual_current_yaw = Serial3.readString().toInt();
+  hmi.writeNum("n0.val", 100 - mobile_manual_current_yaw);
+}
+void trigger8() {  //go to pitch2
+  Serial3.println("<p2>");
+  hmi.writeStr("page page4");  //page2 is pitch2
+  Serial.println("trigger8");
+
+  while (!Serial3.available()) {
+    (1);  //wait til message from bluetooth is available
+  }
+  mobile_manual_current_pitch = Serial3.readString().toInt();
+  hmi.writeNum("n0.val", 100 - mobile_manual_current_pitch);
+}
+void trigger9() {  //pitch1++
+  // int current_val = hmi.readNumber("n0.val");
+
+  if (ground_manual_current_pitch < 100) {
+    ground_manual_current_pitch++;
+    hmi.writeNum("n0.val", 100 - ground_manual_current_pitch);
+  }
+  pitch_servo.write(map(ground_manual_current_pitch, 0, 100, 0, 180));
+}
+void trigger10() {  //pitch1--
+  // int current_val = hmi.readNumber("n0.val");
+  if (ground_manual_current_pitch > 0) {
+    ground_manual_current_pitch--;
+    hmi.writeNum("n0.val", 100 - ground_manual_current_pitch);
+  }
+  pitch_servo.write(map(ground_manual_current_pitch, 0, 100, 0, 180));
+}
+void trigger11() {  //yaw2++
+  // int current_val = hmi.readNumber("n0.val");
+
+  // if (mobile_manual_current_yaw < 100) {
+  //   mobile_manual_current_yaw++;
+  //   hmi.writeNum("n0.val", mobile_manual_current_yaw);
+  //   Serial3.println("yaw2," + String(mobile_manual_current_yaw));  // send currentval of string bluetooth to get sent
+  //   // Serial.println("yaw2," + String(mobile_manual_current_yaw));
+  // }
+  if (mobile_manual_current_yaw < 100) {
+    mobile_manual_current_yaw++;
+    hmi.writeNum("n0.val", 100 - mobile_manual_current_yaw);
+    Serial3.println("<y2+>");
+    // Serial.println("yaw2," + String(mobile_manual_current_yaw));
+  }
+  // Serial3.println("<y2+>");
+}
+void trigger12() {  //yaw2--
+  // int mobile_manual_current_yaw = hmi.readNumber("n0.val");
+  if (mobile_manual_current_yaw > 0) {
+    mobile_manual_current_yaw--;
+    hmi.writeNum("n0.val", 100 - mobile_manual_current_yaw);
+    Serial3.println("<y2->");  // send currentval of string bluetooth to get sent
+    // Serial.println("yaw2," + String(mobile_manual_current_yaw));
+  }
+}
+void trigger13() {  //pitch2++
+  // int current_val = hmi.readNumber("n0.val");
+
+  if (mobile_manual_current_pitch < 100) {
+    mobile_manual_current_pitch++;
+    hmi.writeNum("n0.val", 100 - mobile_manual_current_pitch);
+    Serial3.println("<p2+>");
+  }
+}
+void trigger14() {  //pitch2--
+  // int current_val = hmi.readNumber("n0.val");
+  if (mobile_manual_current_pitch > 0) {
+    mobile_manual_current_pitch--;
+    hmi.writeNum("n0.val", 100 - mobile_manual_current_pitch);
+    Serial3.println("<p2->");
+  }
+}
+
+void BearingElevangleServos() {
+  lat1 = this_gps.location.lat() * PI / 180;              //this lat
+  lon1 = this_gps.location.lng() * PI / 180;              //this lon
+  alt1 = bmp.readAltitude() + altitude_calibration_term;  // this altitude, still must do calibration
+  lat2 = other_lat_long_alt[0] * PI / 180;
+  lon2 = other_lat_long_alt[1] * PI / 180;
+  float lat1deg = lat1 * 180 / PI;
+  float lon1deg = lon1 * 180 / PI;
+  // alt2 = other_lat_long_alt[2];
+  // Serial.println("alt2 before adding calibration term: " + String(alt2));
+  alt2 = other_lat_long_alt[2];  //add calibration term
+  // Serial.println("alt2 after adding calibration term: " + String(alt2));
+  // Serial.println(String("lat1: ") + String(lat1, 10) + ", lon1: " + String(lon1, 10) + ", alt1: " + String(alt1, 10) + ", lat2: " + String(lat2, 10) + ", lon2: " + String(lon2, 10) + ", alt2: " + String(alt2, 10));
+
+  // bearing calc
+
+  y = sin(lon2 - lon1) * cos(lat2);
+  x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1);
+  theta = atan2(y, x);
+  bearing = fmod((theta * 180 / PI + 360), 360);
+  // Serial.print(these_coords)
+  // Serial.print("Bearing before reduction: " + String(bearing));
+  if (bearing >= yaw_range && bearing < between_yaw_range_and_360) {
+    bearing = yaw_range;
+  } else if (bearing >= between_yaw_range_and_360) {
+    bearing = 0;
+  }
+  // Serial.print(" bearing after reduction " + String(bearing));
+
+  deltalatrad = (lat2 - lat1);
+  deltalonrad = (lon2 - lon1);
+
+  a = sin(deltalatrad / 2) * sin(deltalatrad / 2) + cos(lat1) * cos(lat2) * sin(deltalonrad / 2) * sin(deltalonrad / 2);
+  // Serial.print("a: ");
+  // Serial.println(a, 12);
+  c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  // Serial.print("c: ");
+  // Serial.println(c, 12);
+  d = R * c;  //
+  // Serial.print(" d: ");
+  hmi.writeStr("t3.txt", String(d, 2));
+  // Serial.println(d, 12);
+
+  elevangle = atan2((alt2 - alt1), d) * 180 / PI + 90;  // delta altitude is opposite, d is adjacent
+  // if (elevangle > 90) {
+  //   elevangle = 90;
+  // } else if (elevangle < -90) {
+  //   elevangle - 90;
+  // }
+  // elevangle += 90;  //add 90 degrees to take it from (-90, 90) to (0, 180);
+  // elevangle = 90; //COMMENT OUT WHEN DONE TESTING!
+
+
+  // Serial.print("Elevangle: ");
+  // Serial.println(elevangle);
+
+  yaw_servo_bearing = map(bearing, 0, yaw_range, 180, 0);
+  // Serial.print("scaled bearing to servo 0 to 180: ");
+  // Serial.println(yaw_servo_bearing);
+
+  pitch_servo_elevangle = map(elevangle, 0, pitch_range, 0, 180);
+  // Serial.print("pitch servo elevangle scaled to 0 to 180: ");
+  // Serial.println(pitch_servo_elevangle);
+  pitch_servo.write(pitch_servo_elevangle);
+  yaw_servo.write(yaw_servo_bearing);
+  ground_manual_current_pitch = map(pitch_servo_elevangle, 0, 180, 0, 100);
+  ground_manual_current_yaw = map(yaw_servo_bearing, 0, 180, 0, 100);
+  Serial.println("ground unit: " + String(lat1deg, 6) + "," + String(lon1deg, 6) + "," + String(alt1, 2) + "," + String(bearing, 2) + "," + String(elevangle, 2) + "," + String(yaw_servo_bearing) + "," + String(pitch_servo_elevangle));
+  // yaw_servo.write(45);
+}
